@@ -1,55 +1,64 @@
-import express from 'express';
-import { createServer as createViteServer } from 'vite';
+import "dotenv/config";
+import express from "express";
+import { createServer as createViteServer } from "vite";
 
 async function startServer() {
   const app = express();
-  
-  // Create Vite server in middleware mode
-  const vite = await createViteServer({
-    server: { middlewareMode: true },
-    appType: 'spa',
-  });
+  app.use(express.json({ limit: "10mb" }));
 
-  // Use vite's connect instance as middleware
-  app.use(vite.middlewares);
-
-  // API Routes (Proxy for AI services)
-  app.use(express.json());
-
-  app.post('/api/generate-video', async (req, res) => {
-    const { prompt, duration, image, provider } = req.body;
-    const apiKey = provider === 'agnes' ? process.env.AGNES_API_KEY : process.env.PRUNA_API_KEY;
-    // Map provider+model to specific Pruna endpoint
-    let url = provider === 'agnes' ? 'https://api.agnes.ai/v1/generate' : 'https://api.pruna.ai/v1/generate';
-    if (provider === 'pruna') {
-        const model = req.body.model || 'p2'; // Default to p2
-        url = `https://api.pruna.ai/v1/${model}/generate`;
+  app.post("/api/generate-video", async (req, res) => {
+    const { prompt, negativePrompt, seed, resolution, duration, image, provider, model, includeAudio } = req.body;
+    if (!prompt || !image) {
+      res.status(400).json({ error: "prompt and image are required" });
+      return;
+    }
+    const apiKey = provider === "agnes" ? process.env.AGNES_API_KEY : process.env.PRUNA_API_KEY;
+    if (!apiKey) {
+      res.status(500).json({ error: `${provider === "agnes" ? "AGNES_API_KEY" : "PRUNA_API_KEY"} is not configured` });
+      return;
     }
 
-    console.log(`Proxying to ${provider} (${req.body.model}) at ${url}`);
-    console.log('Request Body:', JSON.stringify({ prompt, duration, image, provider }));
-
+    const url = resolveGenerateUrl(provider, model);
     try {
       const response = await fetch(url, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({ prompt, duration, image }),
+        body: JSON.stringify({ prompt, negativePrompt, seed, resolution, duration, image, model, includeAudio }),
       });
       const data = await response.json();
-      console.log('API Response:', data);
+      if (!response.ok) {
+        res.status(response.status).json({ error: data.error || "Video generation failed" });
+        return;
+      }
       res.json(data);
     } catch (error) {
-      console.error('API Error:', error);
-      res.status(500).json({ error: 'Failed to generate video' });
+      console.error("API Error:", error);
+      res.status(500).json({ error: "Failed to generate video" });
     }
   });
 
-  app.listen(3000, () => {
-    console.log('Server running on http://localhost:3000');
+  if (process.env.NODE_ENV === "production") {
+    app.use(express.static("dist"));
+  } else {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  }
+
+  const port = Number(process.env.PORT) || 3000;
+  app.listen(port, () => {
+    console.log(`Server running on http://localhost:${port}`);
   });
+}
+
+function resolveGenerateUrl(provider: string, model: string) {
+  if (provider === "agnes") return "https://api.agnes.ai/v1/generate";
+  return `https://api.pruna.ai/v1/${model || "p2"}/generate`;
 }
 
 startServer();

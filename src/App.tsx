@@ -4,8 +4,7 @@
  */
 
 import { useState } from 'react';
-import { motion } from 'motion/react';
-import { Upload, Play, Loader2 } from 'lucide-react';
+import { Play, Loader2 } from 'lucide-react';
 
 export default function App() {
   const [file, setFile] = useState<string | null>(null);
@@ -19,22 +18,37 @@ export default function App() {
   const [includeAudio, setIncludeAudio] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const costEstimate = { '480p': '$0.02', '720p': '$0.05', '1080p': '$0.10' }[resolution] || '$0.05';
 
   const handleGenerate = async () => {
-    if (!file) return;
+    if (!file || loading) return;
     setLoading(true);
-    
-    const response = await fetch('/api/generate-video', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, negativePrompt, seed, resolution, duration, image: file, provider, model, includeAudio }),
-    });
-    
-    const data = await response.json();
-    setResult(data.videoUrl || 'generated_video_placeholder.mp4');
-    setLoading(false);
+    setError(null);
+
+    try {
+      const response = await fetch('/api/generate-video', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, negativePrompt, seed, resolution, duration, image: file, provider, model, includeAudio }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        setError(data.error || 'Video generation failed');
+        return;
+      }
+      if (!data.videoUrl) {
+        setError('No video URL returned by the provider');
+        return;
+      }
+      setResult(data.videoUrl);
+    } catch {
+      setError('Failed to reach the video service');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -42,8 +56,8 @@ export default function App() {
       <header className="flex justify-between items-center mb-16 border-b border-zinc-800 pb-8">
         <h1 className="text-2xl font-bold tracking-tight">VisionReel</h1>
         <nav className="flex gap-6 text-sm font-medium text-zinc-400">
-          <a href="#" className="hover:text-white">Studio</a>
-          <a href="#" className="hover:text-white">Gallery</a>
+          <span>Studio</span>
+          <span>Gallery</span>
         </nav>
       </header>
 
@@ -91,7 +105,8 @@ export default function App() {
 
                 <label className="block">
                 <span className="text-sm text-zinc-400">Provider</span>
-                <select 
+                <select
+                  value={provider}
                   onChange={(e) => {
                     setProvider(e.target.value);
                     if (e.target.value !== 'pruna') setModel('p2');
@@ -148,8 +163,9 @@ export default function App() {
 
               <label className="block">
                 <span className="text-sm text-zinc-400">Duration (seconds)</span>
-                <input 
+                <input
                   type="number"
+                  min={1}
                   value={duration}
                   onChange={(e) => setDuration(Number(e.target.value))}
                   className="w-full mt-2 bg-zinc-950 border border-zinc-800 rounded-lg p-3 text-sm focus:outline-none focus:ring-1 focus:ring-zinc-600"
@@ -202,14 +218,17 @@ export default function App() {
                 <span className="text-sm text-zinc-400">Include Audio</span>
               </label>
 
-              <button 
+              <button
                 onClick={handleGenerate}
-                disabled={loading}
+                disabled={loading || !file}
                 className="w-full bg-white text-black font-semibold rounded-lg py-3 flex items-center justify-center gap-2 hover:bg-zinc-200 disabled:opacity-50"
               >
                 {loading ? <Loader2 className="animate-spin w-4 h-4" /> : <Play className="w-4 h-4" />}
                 Generate Reel
               </button>
+              {error && (
+                <p className="text-sm text-red-400">{error}</p>
+              )}
             </div>
           </div>
         </section>
