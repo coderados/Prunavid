@@ -117,7 +117,7 @@ async function handlePruna(body: Record<string, unknown>, res: express.Response)
     const deliveryUrl = await pollPruna(created.get_url as string, apiKey);
     await assertVideoUrl(deliveryUrl, { apikey: apiKey });
     generatedVideoProviders.set(deliveryUrl, "pruna");
-    res.json({ videoUrl: `/api/video?provider=pruna&u=${encodeURIComponent(deliveryUrl)}`, model, provider: "pruna" });
+    res.json({ videoUrl: `api/video?provider=pruna&u=${encodeURIComponent(deliveryUrl)}`, model, provider: "pruna" });
   } catch (error) {
     console.error("Pruna error:", error);
     res.status(502).json({ error: error instanceof Error ? error.message : "Pruna generation failed" });
@@ -185,7 +185,7 @@ async function handleAgnes(body: Record<string, unknown>, res: express.Response)
     const url = await pollAgnes(created.video_id as string, apiKey, model);
     await assertVideoUrl(url, { Authorization: `Bearer ${apiKey}` });
     generatedVideoProviders.set(url, "agnes");
-    res.json({ videoUrl: `/api/video?provider=agnes&u=${encodeURIComponent(url)}`, model, provider: "agnes" });
+    res.json({ videoUrl: `api/video?provider=agnes&u=${encodeURIComponent(url)}`, model, provider: "agnes" });
   } catch (error) {
     console.error("Agnes error:", error);
     res.status(502).json({ error: error instanceof Error ? error.message : "Agnes generation failed" });
