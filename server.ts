@@ -6,6 +6,7 @@ const PRUNA_BASE = "https://api.pruna.ai/v1";
 const AGNES_BASE = "https://apihub.agnes-ai.com/v1";
 const AGNES_POLL_BASE = "https://apihub.agnes-ai.com/agnesapi";
 const MAX_WAIT_MS = 10 * 60 * 1000;
+const generatedVideoProviders = new Map<string, "pruna" | "agnes">();
 
 async function startServer() {
   const app = express();
@@ -28,6 +29,7 @@ async function startServer() {
   // which a plain <video> tag cannot send.
   app.get("/api/video", async (req, res) => {
     const target = String(req.query.u || "");
+    const provider = req.query.provider === "agnes" ? "agnes" : "pruna";
     let host = "";
     try {
       host = new URL(target).hostname;
@@ -35,22 +37,35 @@ async function startServer() {
       res.status(400).json({ error: "Invalid video URL" });
       return;
     }
-    if (!host.endsWith(".pruna.ai") && host !== "pruna.ai") {
+    const allowedHost = generatedVideoProviders.get(target) === provider || (provider === "agnes"
+      ? host === "apihub.agnes-ai.com" || host.endsWith(".agnes-ai.com")
+      : host.endsWith(".pruna.ai") || host === "pruna.ai");
+    if (!allowedHost) {
       res.status(400).json({ error: "Video host not allowed" });
       return;
     }
-    const apiKey = process.env.PRUNA_API_KEY;
+    const apiKey = provider === "agnes" ? process.env.AGNES_API_KEY : process.env.PRUNA_API_KEY;
+    const secretName = provider === "agnes" ? "AGNES_API_KEY" : "PRUNA_API_KEY";
     if (!apiKey) {
-      res.status(500).json({ error: "PRUNA_API_KEY is not configured" });
+      res.status(500).json({ error: `${secretName} is not configured` });
       return;
     }
+    const authHeaders: Record<string, string> = provider === "agnes"
+      ? { Authorization: `Bearer ${apiKey}` }
+      : { apikey: apiKey };
     try {
       const range = req.headers.range;
       const upstream = await fetch(target, {
-        headers: { apikey: apiKey, ...(range ? { Range: range } : {}) },
+        headers: { ...authHeaders, ...(range ? { Range: range } : {}) },
       });
       if (!upstream.ok || !upstream.body) {
-        res.status(502).json({ error: "Failed to fetch video" });
+        res.status(502).json({ error: `Provider video fetch failed (${upstream.status})` });
+        return;
+      }
+      const contentType = upstream.headers.get("Content-Type") || "";
+      if (!contentType.startsWith("video/")) {
+        await upstream.body.cancel();
+        res.status(502).json({ error: `Provider returned ${contentType || "an unknown format"}, not a video` });
         return;
       }
       res.status(upstream.status);
@@ -101,7 +116,8 @@ async function handlePruna(body: Record<string, unknown>, res: express.Response)
     const created = await prunaJson("/predictions", apiKey, { Model: model }, { input });
     const deliveryUrl = await pollPruna(created.get_url as string, apiKey);
     await assertVideoUrl(deliveryUrl, { apikey: apiKey });
-    res.json({ videoUrl: `/api/video?u=${encodeURIComponent(deliveryUrl)}`, model, provider: "pruna" });
+    generatedVideoProviders.set(deliveryUrl, "pruna");
+    res.json({ videoUrl: `/api/video?provider=pruna&u=${encodeURIComponent(deliveryUrl)}`, model, provider: "pruna" });
   } catch (error) {
     console.error("Pruna error:", error);
     res.status(502).json({ error: error instanceof Error ? error.message : "Pruna generation failed" });
@@ -168,7 +184,8 @@ async function handleAgnes(body: Record<string, unknown>, res: express.Response)
     });
     const url = await pollAgnes(created.video_id as string, apiKey, model);
     await assertVideoUrl(url, { Authorization: `Bearer ${apiKey}` });
-    res.json({ videoUrl: url, model, provider: "agnes" });
+    generatedVideoProviders.set(url, "agnes");
+    res.json({ videoUrl: `/api/video?provider=agnes&u=${encodeURIComponent(url)}`, model, provider: "agnes" });
   } catch (error) {
     console.error("Agnes error:", error);
     res.status(502).json({ error: error instanceof Error ? error.message : "Agnes generation failed" });
@@ -254,8 +271,9 @@ async function pollAgnes(videoId: string, apiKey: string, model: string) {
     const data = await response.json();
     if (!response.ok) throw new Error(upstreamMessage(data, "Agnes status check failed"));
     if (data.status === "completed") {
-      if (!data.url) throw new Error("Agnes finished without a video URL");
-      return data.url as string;
+      const url = data.url || data.metadata?.url;
+      if (!url) throw new Error("Agnes finished without a video URL");
+      return url as string;
     }
     if (data.status === "failed") throw new Error(upstreamMessage(data, "Agnes generation failed"));
     if (Date.now() - started > MAX_WAIT_MS) throw new Error("Agnes generation timed out");
