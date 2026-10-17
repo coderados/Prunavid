@@ -10,7 +10,7 @@ const generatedVideoProviders = new Map<string, "pruna" | "agnes">();
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: "10mb" }));
+  app.use(express.json({ limit: "25mb" }));
 
   app.post("/api/generate-video", async (req, res) => {
     const { provider, model } = req.body;

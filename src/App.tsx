@@ -58,7 +58,9 @@ export default function App() {
         }),
       });
 
-      const data = await response.json();
+      const data = response.headers.get('content-type')?.includes('application/json')
+        ? await response.json()
+        : { error: `Video service returned HTTP ${response.status}` };
       if (!response.ok) {
         setError(data.error || 'Video generation failed');
         return;
@@ -443,20 +445,16 @@ function readImageFile(file: File | undefined, setFile: (value: string | null) =
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement('canvas');
-      const MAX_WIDTH = 1024;
-      let width = img.width;
-      let height = img.height;
-
-      if (width > MAX_WIDTH) {
-        height *= MAX_WIDTH / width;
-        width = MAX_WIDTH;
-      }
+      const MAX_DIMENSION = 1024;
+      const scale = Math.min(1, MAX_DIMENSION / Math.max(img.width, img.height));
+      const width = Math.round(img.width * scale);
+      const height = Math.round(img.height * scale);
 
       canvas.width = width;
       canvas.height = height;
       const ctx = canvas.getContext('2d');
       ctx?.drawImage(img, 0, 0, width, height);
-      setFile(canvas.toDataURL('image/jpeg', 0.8));
+      setFile(canvas.toDataURL('image/jpeg', 0.7));
     };
     img.src = reader.result as string;
   };
