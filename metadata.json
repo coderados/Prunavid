@@ -1,0 +1,6 @@
+{
+  "name": "VisionReel: AI Video Generator",
+  "description": "Transform static images into dynamic video clips for portfolios and showreels.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
