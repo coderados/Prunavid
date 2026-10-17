@@ -100,6 +100,7 @@ async function handlePruna(body: Record<string, unknown>, res: express.Response)
     const input = model === "wan-i2v" ? wanInput(body, imageUrl) : pVideo2Input(body, imageUrl);
     const created = await prunaJson("/predictions", apiKey, { Model: model }, { input });
     const deliveryUrl = await pollPruna(created.get_url as string, apiKey);
+    await assertVideoUrl(deliveryUrl, { apikey: apiKey });
     res.json({ videoUrl: `/api/video?u=${encodeURIComponent(deliveryUrl)}`, model, provider: "pruna" });
   } catch (error) {
     console.error("Pruna error:", error);
@@ -166,6 +167,7 @@ async function handleAgnes(body: Record<string, unknown>, res: express.Response)
       ...(firstFrame ? { first_frame: firstFrame } : {}),
     });
     const url = await pollAgnes(created.video_id as string, apiKey, model);
+    await assertVideoUrl(url, { Authorization: `Bearer ${apiKey}` });
     res.json({ videoUrl: url, model, provider: "agnes" });
   } catch (error) {
     console.error("Agnes error:", error);
@@ -263,6 +265,25 @@ async function pollAgnes(videoId: string, apiKey: string, model: string) {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function assertVideoUrl(url: string, headers: Record<string, string>) {
+  const type = await probeContentType(url, headers);
+  if (type && !type.startsWith("video/")) {
+    throw new Error(`Provider returned a non-video URL (content-type: ${type})`);
+  }
+}
+
+async function probeContentType(url: string, headers: Record<string, string>) {
+  const head = await fetch(url, { method: "HEAD", headers });
+  if (head.ok) return head.headers.get("Content-Type");
+  const partial = await fetch(url, { headers: { ...headers, Range: "bytes=0-0" } });
+  if (partial.ok || partial.status === 206) {
+    const type = partial.headers.get("Content-Type");
+    await partial.body?.cancel();
+    return type;
+  }
+  return null;
 }
 
 startServer();
