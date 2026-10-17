@@ -65,11 +65,16 @@ export default function App() {
         setError(data.error || 'Video generation failed');
         return;
       }
-      if (!data.videoUrl) {
-        setError('No video URL returned by the provider');
+      if (!data.jobId) {
+        setError('Video service did not return a generation job');
         return;
       }
-      setResult(data.videoUrl);
+      const result = await waitForVideo(data.jobId);
+      if (result.status === 'failed') {
+        setError(result.error);
+        return;
+      }
+      setResult(result.videoUrl);
     } catch {
       setError('Failed to reach the video service');
     } finally {
@@ -420,6 +425,26 @@ export default function App() {
       </main>
     </div>
   );
+}
+
+async function waitForVideo(jobId: string) {
+  const deadline = Date.now() + 10 * 60 * 1000;
+  for (;;) {
+    const response = await fetch(`api/generate-video/${encodeURIComponent(jobId)}`);
+    const data = response.headers.get('content-type')?.includes('application/json')
+      ? await response.json()
+      : { status: 'failed', error: `Video service returned HTTP ${response.status}` };
+    if (!response.ok || data.status === 'failed') {
+      return { status: 'failed' as const, error: data.error || 'Video generation failed' };
+    }
+    if (data.status === 'completed' && data.videoUrl) {
+      return { status: 'completed' as const, videoUrl: data.videoUrl as string };
+    }
+    if (Date.now() > deadline) {
+      return { status: 'failed' as const, error: 'Video generation timed out' };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
 }
 
 function estimateCost(options: { provider: string; model: string; resolution: string; duration: number; draft: boolean }) {

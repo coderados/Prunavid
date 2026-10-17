@@ -7,26 +7,39 @@ const AGNES_BASE = "https://apihub.agnes-ai.com/v1";
 const AGNES_POLL_BASE = "https://apihub.agnes-ai.com/agnesapi";
 const MAX_WAIT_MS = 10 * 60 * 1000;
 const generatedVideoProviders = new Map<string, "pruna" | "agnes">();
+const videoJobs = new Map<string, VideoJob>();
+
+type VideoJob =
+  | { status: "processing" }
+  | { status: "completed"; videoUrl: string; model: string; provider: string }
+  | { status: "failed"; error: string };
 
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: "25mb" }));
 
-  app.post("/api/generate-video", async (req, res) => {
-    const { provider, model } = req.body;
-    if (provider === "pruna") {
-      await handlePruna(req.body, res);
-      return;
-    }
-    if (provider === "agnes") {
-      await handleAgnes(req.body, res);
-      return;
-    }
-    res.status(400).json({ error: "Unknown provider" });
+  app.post("/api/generate-video", (req, res) => {
+    const jobId = crypto.randomUUID();
+    videoJobs.set(jobId, { status: "processing" });
+    void runGeneration(req.body)
+      .then((result) => videoJobs.set(jobId, { status: "completed", ...result }))
+      .catch((error) => {
+        console.error("Video generation error:", error);
+        videoJobs.set(jobId, { status: "failed", error: error instanceof Error ? error.message : "Video generation failed" });
+      });
+    res.status(202).json({ jobId });
   });
 
-  // Proxied playback: Pruna delivery URLs require the apikey header,
-  // which a plain <video> tag cannot send.
+  app.get("/api/generate-video/:jobId", (req, res) => {
+    const job = videoJobs.get(req.params.jobId);
+    if (!job) {
+      res.status(404).json({ error: "Generation job not found" });
+      return;
+    }
+    res.json(job);
+    if (job.status !== "processing") videoJobs.delete(req.params.jobId);
+  });
+
   app.get("/api/video", async (req, res) => {
     const target = String(req.query.u || "");
     const provider = req.query.provider === "agnes" ? "agnes" : "pruna";
@@ -55,9 +68,7 @@ async function startServer() {
       : { apikey: apiKey };
     try {
       const range = req.headers.range;
-      const upstream = await fetch(target, {
-        headers: { ...authHeaders, ...(range ? { Range: range } : {}) },
-      });
+      const upstream = await fetch(target, { headers: { ...authHeaders, ...(range ? { Range: range } : {}) } });
       if (!upstream.ok || !upstream.body) {
         res.status(502).json({ error: `Provider video fetch failed (${upstream.status})` });
         return;
@@ -73,7 +84,6 @@ async function startServer() {
         const value = upstream.headers.get(name);
         if (value) res.setHeader(name, value);
       }
-      if (!upstream.headers.get("Content-Type")) res.setHeader("Content-Type", "video/mp4");
       for await (const chunk of upstream.body) res.write(chunk);
       res.end();
     } catch (error) {
@@ -82,150 +92,77 @@ async function startServer() {
     }
   });
 
-  if (process.env.NODE_ENV === "production") {
-    app.use(express.static("dist"));
-  } else {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  }
+  if (process.env.NODE_ENV === "production") app.use(express.static("dist"));
+  else app.use((await createViteServer({ server: { middlewareMode: true }, appType: "spa" })).middlewares);
 
   const port = Number(process.env.PORT) || 3000;
-  app.listen(port, () => {
-    console.log(`Server running on http://localhost:${port}`);
-  });
+  app.listen(port, () => console.log(`Server running on http://localhost:${port}`));
 }
 
-async function handlePruna(body: Record<string, unknown>, res: express.Response) {
+async function runGeneration(body: Record<string, unknown>) {
+  if (body.provider === "pruna") return generatePruna(body);
+  if (body.provider === "agnes") return generateAgnes(body);
+  throw new Error("Unknown provider");
+}
+
+async function generatePruna(body: Record<string, unknown>) {
   const apiKey = process.env.PRUNA_API_KEY;
-  if (!apiKey) {
-    res.status(500).json({ error: "PRUNA_API_KEY is not configured" });
-    return;
-  }
+  if (!apiKey) throw new Error("PRUNA_API_KEY is not configured");
   const image = body.image as string | undefined;
   if (!body.prompt || (body.model !== "p-video-2-pro" && !image)) {
-    res.status(400).json({ error: body.model === "p-video-2-pro" ? "prompt is required" : "prompt and image are required" });
-    return;
+    throw new Error(body.model === "p-video-2-pro" ? "prompt is required" : "prompt and image are required");
   }
   const model = body.model === "wan-i2v" || body.model === "p-video-2-pro" ? body.model : "p-video-2";
-  try {
-    const imageUrl = image ? await uploadToPruna(image, apiKey) : undefined;
-    const input = model === "wan-i2v"
-      ? wanInput(body, imageUrl as string)
-      : model === "p-video-2-pro"
-        ? pVideo2ProInput(body, imageUrl)
-        : pVideo2Input(body, imageUrl as string);
-    const created = await prunaJson("/predictions", apiKey, { Model: model }, { input });
-    const deliveryUrl = await pollPruna(created.get_url as string, apiKey);
-    await assertVideoUrl(deliveryUrl, { apikey: apiKey });
-    generatedVideoProviders.set(deliveryUrl, "pruna");
-    res.json({ videoUrl: `api/video?provider=pruna&u=${encodeURIComponent(deliveryUrl)}`, model, provider: "pruna" });
-  } catch (error) {
-    console.error("Pruna error:", error);
-    res.status(502).json({ error: error instanceof Error ? error.message : "Pruna generation failed" });
-  }
+  const imageUrl = image ? await uploadToPruna(image, apiKey) : undefined;
+  const input = model === "wan-i2v"
+    ? wanInput(body, imageUrl as string)
+    : model === "p-video-2-pro" ? pVideo2ProInput(body, imageUrl) : pVideo2Input(body, imageUrl as string);
+  const created = await prunaJson("/predictions", apiKey, { Model: model }, { input });
+  const deliveryUrl = await pollPruna(created.get_url as string, apiKey);
+  await assertVideoUrl(deliveryUrl, { apikey: apiKey });
+  generatedVideoProviders.set(deliveryUrl, "pruna");
+  return { videoUrl: `api/video?provider=pruna&u=${encodeURIComponent(deliveryUrl)}`, model, provider: "pruna" };
 }
 
 function pVideo2Input(body: Record<string, unknown>, imageUrl: string) {
-  return {
-    prompt: body.prompt,
-    image: imageUrl,
-    duration: Number(body.duration) || 5,
-    resolution: body.resolution === "1080p" ? "1080p" : "720p",
-    fps: body.fps === 48 ? 48 : 24,
-    seed: body.seed === "" || body.seed === undefined ? undefined : Number(body.seed),
-    draft: body.draft === true,
-    save_audio: body.saveAudio !== false,
-  };
+  return { prompt: body.prompt, image: imageUrl, duration: Number(body.duration) || 5, resolution: body.resolution === "1080p" ? "1080p" : "720p", fps: body.fps === 48 ? 48 : 24, seed: body.seed === "" || body.seed === undefined ? undefined : Number(body.seed), draft: body.draft === true, save_audio: body.saveAudio !== false };
 }
 
 function pVideo2ProInput(body: Record<string, unknown>, imageUrl: string | undefined) {
-  return {
-    prompt: body.prompt,
-    ...(imageUrl ? { image: imageUrl } : {}),
-    duration: Math.min(15, Math.max(5, Number(body.duration) || 5)),
-    resolution: body.resolution === "480p" ? "480p" : "768p",
-    mode: body.proMode === "quality" || body.proMode === "cost" ? body.proMode : "speed",
-    prompt_upsampler: body.promptUpsampler === "off" || body.promptUpsampler === "max" ? body.promptUpsampler : "turbo",
-    aspect_ratio: typeof body.aspectRatio === "string" ? body.aspectRatio : "16:9",
-    ...(body.seed === "" || body.seed === undefined ? {} : { seed: Number(body.seed) }),
-  };
+  return { prompt: body.prompt, ...(imageUrl ? { image: imageUrl } : {}), duration: Math.min(15, Math.max(5, Number(body.duration) || 5)), resolution: body.resolution === "480p" ? "480p" : "768p", mode: body.proMode === "quality" || body.proMode === "cost" ? body.proMode : "speed", prompt_upsampler: body.promptUpsampler === "off" || body.promptUpsampler === "max" ? body.promptUpsampler : "turbo", aspect_ratio: typeof body.aspectRatio === "string" ? body.aspectRatio : "16:9", ...(body.seed === "" || body.seed === undefined ? {} : { seed: Number(body.seed) }) };
 }
 
 function wanInput(body: Record<string, unknown>, imageUrl: string) {
-  return {
-    prompt: body.prompt,
-    image: imageUrl,
-    resolution: body.resolution === "720p" ? "720p" : "480p",
-    frames_per_second: Math.min(30, Math.max(5, Number(body.fps) || 16)),
-    num_frames: Math.min(121, Math.max(81, Number(body.frames) || 81)),
-    interpolate_output: body.interpolate === true,
-    go_fast: body.goFast !== false,
-  };
+  return { prompt: body.prompt, image: imageUrl, resolution: body.resolution === "720p" ? "720p" : "480p", frames_per_second: Math.min(30, Math.max(5, Number(body.fps) || 16)), num_frames: Math.min(121, Math.max(81, Number(body.frames) || 81)), interpolate_output: body.interpolate === true, go_fast: body.goFast !== false };
 }
 
-async function handleAgnes(body: Record<string, unknown>, res: express.Response) {
+async function generateAgnes(body: Record<string, unknown>) {
   const apiKey = process.env.AGNES_API_KEY;
-  if (!apiKey) {
-    res.status(500).json({ error: "AGNES_API_KEY is not configured" });
-    return;
-  }
-  if (!body.prompt) {
-    res.status(400).json({ error: "prompt is required" });
-    return;
-  }
-  try {
-    const model = body.model === "agnes-video-2.5-flash" ? "agnes-video-2.5-flash" : "agnes-video-2.5";
-    const image = body.image as string | undefined;
-    const useKeyframe = Boolean(image);
-    let firstFrame: string | undefined;
-    if (useKeyframe) {
-      const prunaKey = process.env.PRUNA_API_KEY;
-      if (!prunaKey) {
-        res.status(500).json({ error: "Agnes image-to-video needs PRUNA_API_KEY for image upload, or use text mode without an image" });
-        return;
-      }
-      firstFrame = await uploadToPruna(image as string, prunaKey);
-    }
-    const created = await agnesJson("/videos", apiKey, {
-      model,
-      prompt: body.prompt,
-      mode: useKeyframe ? "keyframe" : "text",
-      seconds: String(Math.min(12, Math.max(4, Number(body.duration) || 5))),
-      size: model === "agnes-video-2.5-flash" ? "720P" : body.resolution === "1080P" ? "1080P" : "720P",
-      aspect_ratio: typeof body.aspectRatio === "string" ? body.aspectRatio : "16:9",
-      seed: body.seed === "" || body.seed === undefined ? undefined : Number(body.seed),
-      ...(firstFrame ? { first_frame: firstFrame } : {}),
-    });
-    const url = await pollAgnes(created.video_id as string, apiKey, model);
-    await assertVideoUrl(url, { Authorization: `Bearer ${apiKey}` });
-    generatedVideoProviders.set(url, "agnes");
-    res.json({ videoUrl: `api/video?provider=agnes&u=${encodeURIComponent(url)}`, model, provider: "agnes" });
-  } catch (error) {
-    console.error("Agnes error:", error);
-    res.status(502).json({ error: error instanceof Error ? error.message : "Agnes generation failed" });
-  }
+  if (!apiKey) throw new Error("AGNES_API_KEY is not configured");
+  if (!body.prompt) throw new Error("prompt is required");
+  const model = body.model === "agnes-video-2.5-flash" ? "agnes-video-2.5-flash" : "agnes-video-2.5";
+  const image = body.image as string | undefined;
+  const firstFrame = image ? await uploadToPruna(image, process.env.PRUNA_API_KEY || "") : undefined;
+  const created = await agnesJson("/videos", apiKey, { model, prompt: body.prompt, mode: firstFrame ? "keyframe" : "text", seconds: String(Math.min(12, Math.max(4, Number(body.duration) || 5))), size: model === "agnes-video-2.5-flash" ? "720P" : body.resolution === "1080P" ? "1080P" : "720P", aspect_ratio: typeof body.aspectRatio === "string" ? body.aspectRatio : "16:9", ...(firstFrame ? { first_frame: firstFrame } : {}) });
+  const url = await pollAgnes(created.video_id as string, apiKey, model);
+  await assertVideoUrl(url, { Authorization: `Bearer ${apiKey}` });
+  generatedVideoProviders.set(url, "agnes");
+  return { videoUrl: `api/video?provider=agnes&u=${encodeURIComponent(url)}`, model, provider: "agnes" };
 }
 
 function upstreamMessage(data: unknown, fallback: string) {
-  const err = (data as { error?: unknown; message?: unknown } | null)?.error
-    ?? (data as { message?: unknown } | null)?.message;
+  const err = (data as { error?: unknown; message?: unknown } | null)?.error ?? (data as { message?: unknown } | null)?.message;
   if (typeof err === "string" && err) return err;
   if (err !== undefined && err !== null) return JSON.stringify(err);
   return fallback;
 }
 
 async function uploadToPruna(dataUrl: string, apiKey: string) {
+  if (!apiKey) throw new Error("PRUNA_API_KEY is not configured for image upload");
   const { buffer, mime } = decodeDataUrl(dataUrl);
   const form = new FormData();
   form.append("content", new Blob([buffer], { type: mime }), mime === "image/png" ? "upload.png" : "upload.jpg");
-  const response = await fetch(`${PRUNA_BASE}/files`, {
-    method: "POST",
-    headers: { apikey: apiKey },
-    body: form,
-  });
+  const response = await fetch(`${PRUNA_BASE}/files`, { method: "POST", headers: { apikey: apiKey }, body: form });
   const data = await response.json();
   if (!response.ok) throw new Error(upstreamMessage(data, "Image upload failed"));
   const url = data.urls?.get as string | undefined;
@@ -239,12 +176,8 @@ function decodeDataUrl(dataUrl: string) {
   return { buffer: Buffer.from(match[2], "base64"), mime: match[1] };
 }
 
-async function prunaJson(path: string, apiKey: string, headers: Record<string, string>, body?: unknown) {
-  const response = await fetch(`${PRUNA_BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", apikey: apiKey, ...headers },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+async function prunaJson(path: string, apiKey: string, headers: Record<string, string>, body: unknown) {
+  const response = await fetch(`${PRUNA_BASE}${path}`, { method: "POST", headers: { "Content-Type": "application/json", apikey: apiKey, ...headers }, body: JSON.stringify(body) });
   const data = await response.json();
   if (!response.ok) throw new Error(upstreamMessage(data, `Pruna request failed (${response.status})`));
   return data;
@@ -267,11 +200,7 @@ async function pollPruna(statusUrl: string, apiKey: string) {
 }
 
 async function agnesJson(path: string, apiKey: string, body: unknown) {
-  const response = await fetch(`${AGNES_BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify(body),
-  });
+  const response = await fetch(`${AGNES_BASE}${path}`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) });
   const data = await response.json();
   if (!response.ok) throw new Error(upstreamMessage(data, `Agnes request failed (${response.status})`));
   return data;
@@ -281,10 +210,7 @@ async function pollAgnes(videoId: string, apiKey: string, model: string) {
   if (!videoId) throw new Error("Agnes returned no video ID");
   const started = Date.now();
   for (;;) {
-    const response = await fetch(
-      `${AGNES_POLL_BASE}?video_id=${encodeURIComponent(videoId)}&model_name=${model}`,
-      { headers: { Authorization: `Bearer ${apiKey}` } },
-    );
+    const response = await fetch(`${AGNES_POLL_BASE}?video_id=${encodeURIComponent(videoId)}&model_name=${model}`, { headers: { Authorization: `Bearer ${apiKey}` } });
     const data = await response.json();
     if (!response.ok) throw new Error(upstreamMessage(data, "Agnes status check failed"));
     if (data.status === "completed") {
@@ -298,15 +224,11 @@ async function pollAgnes(videoId: string, apiKey: string, model: string) {
   }
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+function sleep(ms: number) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 async function assertVideoUrl(url: string, headers: Record<string, string>) {
   const type = await probeContentType(url, headers);
-  if (type && !type.startsWith("video/")) {
-    throw new Error(`Provider returned a non-video URL (content-type: ${type})`);
-  }
+  if (type && !type.startsWith("video/")) throw new Error(`Provider returned a non-video URL (content-type: ${type})`);
 }
 
 async function probeContentType(url: string, headers: Record<string, string>) {
