@@ -13,13 +13,15 @@ const labelTextClass = "text-sm text-zinc-400";
 export default function App() {
   const [file, setFile] = useState<string | null>(null);
   const [prompt, setPrompt] = useState('The camera slowly pushes in, gentle wind moves the hair');
-  const [seed, setSeed] = useState(1234);
+  const [seed, setSeed] = useState<number | null>(null);
   const [provider, setProvider] = useState('pruna');
   const [model, setModel] = useState('p-video-2');
   const [agnesModel, setAgnesModel] = useState('agnes-video-2.5-flash');
   const [duration, setDuration] = useState(5);
   const [resolution, setResolution] = useState('720p');
   const [fps, setFps] = useState(24);
+  const [proMode, setProMode] = useState('speed');
+  const [promptUpsampler, setPromptUpsampler] = useState('turbo');
   const [frames, setFrames] = useState(81);
   const [draft, setDraft] = useState(false);
   const [saveAudio, setSaveAudio] = useState(true);
@@ -32,13 +34,14 @@ export default function App() {
 
   const isWan = provider === 'pruna' && model === 'wan-i2v';
   const isPVideo2 = provider === 'pruna' && model === 'p-video-2';
+  const isPVideo2Pro = provider === 'pruna' && model === 'p-video-2-pro';
   const isAgnes = provider === 'agnes';
 
   const costEstimate = estimateCost({ provider, model: isAgnes ? agnesModel : model, resolution, duration, draft });
 
   const handleGenerate = async () => {
     if (isAgnes && !file && !prompt) return;
-    if (!isAgnes && !file) return;
+    if (!isAgnes && !isPVideo2Pro && !file) return;
     if (loading) return;
     setLoading(true);
     setError(null);
@@ -51,7 +54,7 @@ export default function App() {
           prompt, seed, duration, image: file, provider,
           model: isAgnes ? agnesModel : model,
           resolution: isAgnes && agnesModel === 'agnes-video-2.5-flash' ? '720P' : resolution,
-          fps, frames, draft, saveAudio, interpolate, goFast, aspectRatio,
+          fps, frames, draft, saveAudio, interpolate, goFast, aspectRatio, proMode, promptUpsampler,
         }),
       });
 
@@ -88,7 +91,7 @@ export default function App() {
             <h2 className="text-lg font-semibold mb-6">Create</h2>
             <div className="space-y-6">
               <label className={labelClass}>
-                <span className={labelTextClass}>Source Image{isAgnes ? ' (optional — omitted for text mode)' : ''}</span>
+                <span className={labelTextClass}>Source Image{isAgnes || isPVideo2Pro ? ' (optional)' : ''}</span>
                 <input
                   type="file"
                   accept="image/*"
@@ -127,12 +130,13 @@ export default function App() {
                     onChange={(e) => {
                       const next = e.target.value;
                       setModel(next);
-                      setResolution(next === 'wan-i2v' ? '480p' : '720p');
+                      setResolution(next === 'wan-i2v' ? '480p' : next === 'p-video-2-pro' ? '768p' : '720p');
                       setFps(next === 'wan-i2v' ? 16 : 24);
                     }}
                     className={`${inputClass} text-white`}
                   >
                     <option value="p-video-2">P-Video-2 (premium, 720p/1080p)</option>
+                    <option value="p-video-2-pro">P-Video-2 Pro (480p/768p, audio)</option>
                     <option value="wan-i2v">Wan I2V (480p/720p)</option>
                   </select>
                 </label>
@@ -175,12 +179,12 @@ export default function App() {
               {!isWan && (
                 <label className={labelClass}>
                   <span className={labelTextClass}>
-                    {isAgnes ? 'Duration (4–12 seconds)' : 'Duration (1–20 seconds)'}
+                    {isAgnes ? 'Duration (4–12 seconds)' : isPVideo2Pro ? 'Duration (5–15 seconds)' : 'Duration (1–20 seconds)'}
                   </span>
                   <input
                     type="number"
-                    min={isAgnes ? 4 : 1}
-                    max={isAgnes ? 12 : 20}
+                    min={isAgnes ? 4 : isPVideo2Pro ? 5 : 1}
+                    max={isAgnes ? 12 : isPVideo2Pro ? 15 : 20}
                     value={duration}
                     onChange={(e) => setDuration(Number(e.target.value))}
                     className={inputClass}
@@ -200,8 +204,9 @@ export default function App() {
                     <span className={labelTextClass}>Seed</span>
                     <input
                       type="number"
-                      value={seed}
-                      onChange={(e) => setSeed(Number(e.target.value))}
+                      value={seed ?? ''}
+                      placeholder="Random"
+                      onChange={(e) => setSeed(e.target.value === '' ? null : Number(e.target.value))}
                       className={inputClass}
                     />
                   </label>
@@ -223,6 +228,12 @@ export default function App() {
                       <>
                         <option value="720p">720p</option>
                         <option value="1080p">1080p</option>
+                      </>
+                    )}
+                    {isPVideo2Pro && (
+                      <>
+                        <option value="480p">480p</option>
+                        <option value="768p">768p</option>
                       </>
                     )}
                     {isAgnes && agnesModel === 'agnes-video-2.5-flash' && (
@@ -269,6 +280,36 @@ export default function App() {
                     />
                     <span className={labelTextClass}>Include generated sound</span>
                   </label>
+                </>
+              )}
+
+              {isPVideo2Pro && (
+                <>
+                  <label className={labelClass}>
+                    <span className={labelTextClass}>Generation mode</span>
+                    <select
+                      value={proMode}
+                      onChange={(e) => setProMode(e.target.value)}
+                      className={`${inputClass} text-white`}
+                    >
+                      <option value="speed">Speed</option>
+                      <option value="quality">Quality</option>
+                      <option value="cost">Cost</option>
+                    </select>
+                  </label>
+                  <label className={labelClass}>
+                    <span className={labelTextClass}>Prompt upsampler</span>
+                    <select
+                      value={promptUpsampler}
+                      onChange={(e) => setPromptUpsampler(e.target.value)}
+                      className={`${inputClass} text-white`}
+                    >
+                      <option value="turbo">Turbo</option>
+                      <option value="max">Max</option>
+                      <option value="off">Off</option>
+                    </select>
+                  </label>
+                  <p className="text-xs text-zinc-500">P-Video-2 Pro generates audio automatically and uses 24 fps.</p>
                 </>
               )}
 
@@ -386,6 +427,10 @@ function estimateCost(options: { provider: string; model: string; resolution: st
     return `$${(rate * options.duration).toFixed(3)}`;
   }
   if (options.model === 'wan-i2v') return options.resolution === '720p' ? '$0.11' : '$0.05';
+  if (options.model === 'p-video-2-pro') {
+    const rate = options.resolution === '768p' ? 0.075 : 0.02;
+    return `$${(rate * options.duration).toFixed(3)}`;
+  }
   const rate = options.resolution === '1080p' ? 0.05 : 0.015;
   const total = rate * options.duration * (options.draft ? 0.5 : 1);
   return `$${total.toFixed(3)}`;

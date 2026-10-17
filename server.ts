@@ -105,14 +105,18 @@ async function handlePruna(body: Record<string, unknown>, res: express.Response)
     return;
   }
   const image = body.image as string | undefined;
-  if (!body.prompt || !image) {
-    res.status(400).json({ error: "prompt and image are required" });
+  if (!body.prompt || (body.model !== "p-video-2-pro" && !image)) {
+    res.status(400).json({ error: body.model === "p-video-2-pro" ? "prompt is required" : "prompt and image are required" });
     return;
   }
-  const model = body.model === "wan-i2v" ? "wan-i2v" : "p-video-2";
+  const model = body.model === "wan-i2v" || body.model === "p-video-2-pro" ? body.model : "p-video-2";
   try {
-    const imageUrl = await uploadToPruna(image, apiKey);
-    const input = model === "wan-i2v" ? wanInput(body, imageUrl) : pVideo2Input(body, imageUrl);
+    const imageUrl = image ? await uploadToPruna(image, apiKey) : undefined;
+    const input = model === "wan-i2v"
+      ? wanInput(body, imageUrl as string)
+      : model === "p-video-2-pro"
+        ? pVideo2ProInput(body, imageUrl)
+        : pVideo2Input(body, imageUrl as string);
     const created = await prunaJson("/predictions", apiKey, { Model: model }, { input });
     const deliveryUrl = await pollPruna(created.get_url as string, apiKey);
     await assertVideoUrl(deliveryUrl, { apikey: apiKey });
@@ -134,6 +138,19 @@ function pVideo2Input(body: Record<string, unknown>, imageUrl: string) {
     seed: body.seed === "" || body.seed === undefined ? undefined : Number(body.seed),
     draft: body.draft === true,
     save_audio: body.saveAudio !== false,
+  };
+}
+
+function pVideo2ProInput(body: Record<string, unknown>, imageUrl: string | undefined) {
+  return {
+    prompt: body.prompt,
+    ...(imageUrl ? { image: imageUrl } : {}),
+    duration: Math.min(15, Math.max(5, Number(body.duration) || 5)),
+    resolution: body.resolution === "480p" ? "480p" : "768p",
+    mode: body.proMode === "quality" || body.proMode === "cost" ? body.proMode : "speed",
+    prompt_upsampler: body.promptUpsampler === "off" || body.promptUpsampler === "max" ? body.promptUpsampler : "turbo",
+    aspect_ratio: typeof body.aspectRatio === "string" ? body.aspectRatio : "16:9",
+    ...(body.seed === "" || body.seed === undefined ? {} : { seed: Number(body.seed) }),
   };
 }
 
