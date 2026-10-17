@@ -143,6 +143,7 @@ async function handleAgnes(body: Record<string, unknown>, res: express.Response)
     return;
   }
   try {
+    const model = body.model === "agnes-video-2.5-flash" ? "agnes-video-2.5-flash" : "agnes-video-2.5";
     const image = body.image as string | undefined;
     const useKeyframe = Boolean(image);
     let firstFrame: string | undefined;
@@ -155,21 +156,29 @@ async function handleAgnes(body: Record<string, unknown>, res: express.Response)
       firstFrame = await uploadToPruna(image as string, prunaKey);
     }
     const created = await agnesJson("/videos", apiKey, {
-      model: "agnes-video-2.5",
+      model,
       prompt: body.prompt,
       mode: useKeyframe ? "keyframe" : "text",
       seconds: String(Math.min(12, Math.max(4, Number(body.duration) || 5))),
-      size: body.resolution === "1080P" ? "1080P" : "720P",
+      size: model === "agnes-video-2.5-flash" ? "720P" : body.resolution === "1080P" ? "1080P" : "720P",
       aspect_ratio: typeof body.aspectRatio === "string" ? body.aspectRatio : "16:9",
       seed: body.seed === "" || body.seed === undefined ? undefined : Number(body.seed),
       ...(firstFrame ? { first_frame: firstFrame } : {}),
     });
-    const url = await pollAgnes(created.video_id as string, apiKey);
-    res.json({ videoUrl: url, model: "agnes-video-2.5", provider: "agnes" });
+    const url = await pollAgnes(created.video_id as string, apiKey, model);
+    res.json({ videoUrl: url, model, provider: "agnes" });
   } catch (error) {
     console.error("Agnes error:", error);
     res.status(502).json({ error: error instanceof Error ? error.message : "Agnes generation failed" });
   }
+}
+
+function upstreamMessage(data: unknown, fallback: string) {
+  const err = (data as { error?: unknown; message?: unknown } | null)?.error
+    ?? (data as { message?: unknown } | null)?.message;
+  if (typeof err === "string" && err) return err;
+  if (err !== undefined && err !== null) return JSON.stringify(err);
+  return fallback;
 }
 
 async function uploadToPruna(dataUrl: string, apiKey: string) {
@@ -182,7 +191,7 @@ async function uploadToPruna(dataUrl: string, apiKey: string) {
     body: form,
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || data.message || "Image upload failed");
+  if (!response.ok) throw new Error(upstreamMessage(data, "Image upload failed"));
   const url = data.urls?.get as string | undefined;
   if (!url) throw new Error("Image upload returned no URL");
   return url;
@@ -201,7 +210,7 @@ async function prunaJson(path: string, apiKey: string, headers: Record<string, s
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || data.message || `Pruna request failed (${response.status})`);
+  if (!response.ok) throw new Error(upstreamMessage(data, `Pruna request failed (${response.status})`));
   return data;
 }
 
@@ -210,12 +219,12 @@ async function pollPruna(statusUrl: string, apiKey: string) {
   for (;;) {
     const response = await fetch(statusUrl, { headers: { apikey: apiKey } });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Pruna status check failed");
+    if (!response.ok) throw new Error(upstreamMessage(data, "Pruna status check failed"));
     if (data.status === "succeeded") {
       if (!data.generation_url) throw new Error("Pruna finished without a video URL");
       return data.generation_url as string;
     }
-    if (data.status === "failed") throw new Error(data.error || "Pruna generation failed");
+    if (data.status === "failed") throw new Error(upstreamMessage(data, "Pruna generation failed"));
     if (Date.now() - started > MAX_WAIT_MS) throw new Error("Pruna generation timed out");
     await sleep(5000);
   }
@@ -228,25 +237,25 @@ async function agnesJson(path: string, apiKey: string, body: unknown) {
     body: JSON.stringify(body),
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || data.message || `Agnes request failed (${response.status})`);
+  if (!response.ok) throw new Error(upstreamMessage(data, `Agnes request failed (${response.status})`));
   return data;
 }
 
-async function pollAgnes(videoId: string, apiKey: string) {
+async function pollAgnes(videoId: string, apiKey: string, model: string) {
   if (!videoId) throw new Error("Agnes returned no video ID");
   const started = Date.now();
   for (;;) {
     const response = await fetch(
-      `${AGNES_POLL_BASE}?video_id=${encodeURIComponent(videoId)}&model_name=agnes-video-2.5`,
+      `${AGNES_POLL_BASE}?video_id=${encodeURIComponent(videoId)}&model_name=${model}`,
       { headers: { Authorization: `Bearer ${apiKey}` } },
     );
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Agnes status check failed");
+    if (!response.ok) throw new Error(upstreamMessage(data, "Agnes status check failed"));
     if (data.status === "completed") {
       if (!data.url) throw new Error("Agnes finished without a video URL");
       return data.url as string;
     }
-    if (data.status === "failed") throw new Error(data.error || "Agnes generation failed");
+    if (data.status === "failed") throw new Error(upstreamMessage(data, "Agnes generation failed"));
     if (Date.now() - started > MAX_WAIT_MS) throw new Error("Agnes generation timed out");
     await sleep(2000);
   }

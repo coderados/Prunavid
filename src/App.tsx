@@ -16,6 +16,7 @@ export default function App() {
   const [seed, setSeed] = useState(1234);
   const [provider, setProvider] = useState('pruna');
   const [model, setModel] = useState('p-video-2');
+  const [agnesModel, setAgnesModel] = useState('agnes-video-2.5-flash');
   const [duration, setDuration] = useState(5);
   const [resolution, setResolution] = useState('720p');
   const [fps, setFps] = useState(24);
@@ -33,7 +34,7 @@ export default function App() {
   const isPVideo2 = provider === 'pruna' && model === 'p-video-2';
   const isAgnes = provider === 'agnes';
 
-  const costEstimate = estimateCost({ provider, model, resolution, duration, draft });
+  const costEstimate = estimateCost({ provider, model: isAgnes ? agnesModel : model, resolution, duration, draft });
 
   const handleGenerate = async () => {
     if (isAgnes && !file && !prompt) return;
@@ -47,8 +48,10 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt, seed, duration, image: file, provider, model,
-          resolution, fps, frames, draft, saveAudio, interpolate, goFast, aspectRatio,
+          prompt, seed, duration, image: file, provider,
+          model: isAgnes ? agnesModel : model,
+          resolution: isAgnes && agnesModel === 'agnes-video-2.5-flash' ? '720P' : resolution,
+          fps, frames, draft, saveAudio, interpolate, goFast, aspectRatio,
         }),
       });
 
@@ -136,6 +139,24 @@ export default function App() {
               )}
 
               {isAgnes && (
+                <label className={labelClass}>
+                  <span className={labelTextClass}>Model</span>
+                  <select
+                    value={agnesModel}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setAgnesModel(next);
+                      if (next === 'agnes-video-2.5-flash') setResolution('720P');
+                    }}
+                    className={`${inputClass} text-white`}
+                  >
+                    <option value="agnes-video-2.5-flash">Agnes 2.5 Flash (720P)</option>
+                    <option value="agnes-video-2.5">Agnes 2.5 (720P/1080P)</option>
+                  </select>
+                </label>
+              )}
+
+              {isAgnes && (
                 <p className="text-xs text-zinc-500">
                   With an image, Agnes runs in keyframe mode using it as the first frame; without one, it runs text-to-video.
                 </p>
@@ -204,7 +225,10 @@ export default function App() {
                         <option value="1080p">1080p</option>
                       </>
                     )}
-                    {isAgnes && (
+                    {isAgnes && agnesModel === 'agnes-video-2.5-flash' && (
+                      <option value="720P">720P</option>
+                    )}
+                    {isAgnes && agnesModel !== 'agnes-video-2.5-flash' && (
                       <>
                         <option value="720P">720P</option>
                         <option value="1080P">1080P</option>
@@ -357,6 +381,7 @@ export default function App() {
 
 function estimateCost(options: { provider: string; model: string; resolution: string; duration: number; draft: boolean }) {
   if (options.provider === 'agnes') {
+    if (options.model === 'agnes-video-2.5-flash') return '$0.00';
     const rate = options.resolution === '1080P' ? 0.04 : 0.025;
     return `$${(rate * options.duration).toFixed(3)}`;
   }
