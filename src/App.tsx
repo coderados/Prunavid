@@ -28,7 +28,7 @@ export default function App() {
     setError(null);
 
     try {
-      const response = await fetch('/api/generate-video', {
+      const response = await fetch('api/generate-video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt, negativePrompt, seed, resolution, duration, image: file, provider, model, includeAudio }),
