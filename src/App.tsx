@@ -335,7 +335,12 @@ export default function App() {
         <section className="border border-zinc-800 rounded-2xl p-8 bg-zinc-900/50 flex flex-col items-center justify-center min-h-[400px]">
           {result ? (
             <div className="space-y-4 w-full">
-              <video src={result} controls className="rounded-xl w-full" />
+              <video
+                src={result}
+                controls
+                className="rounded-xl w-full"
+                onError={() => setError('The video file could not be played. Try the download link below.')}
+              />
               <a href={result} download className="block text-center bg-zinc-800 hover:bg-zinc-700 py-2 rounded-lg text-sm">Download Video</a>
             </div>
           ) : (

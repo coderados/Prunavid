@@ -45,14 +45,20 @@ async function startServer() {
       return;
     }
     try {
-      const upstream = await fetch(target, { headers: { apikey: apiKey } });
+      const range = req.headers.range;
+      const upstream = await fetch(target, {
+        headers: { apikey: apiKey, ...(range ? { Range: range } : {}) },
+      });
       if (!upstream.ok || !upstream.body) {
         res.status(502).json({ error: "Failed to fetch video" });
         return;
       }
-      res.setHeader("Content-Type", upstream.headers.get("Content-Type") || "video/mp4");
-      const length = upstream.headers.get("Content-Length");
-      if (length) res.setHeader("Content-Length", length);
+      res.status(upstream.status);
+      for (const name of ["Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"]) {
+        const value = upstream.headers.get(name);
+        if (value) res.setHeader(name, value);
+      }
+      if (!upstream.headers.get("Content-Type")) res.setHeader("Content-Type", "video/mp4");
       for await (const chunk of upstream.body) res.write(chunk);
       res.end();
     } catch (error) {
